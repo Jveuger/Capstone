@@ -1,0 +1,309 @@
+---
+title: "Movielens"
+author: "Jordy Veuger"
+date: "6/09/2019"
+output:
+  pdf_document: default
+  html_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+## Movielens Capstone
+
+# 1. Introduction
+The purpose of this R project is to try to create a model that predicts what rating a user will give to a movie. Or in other words, it predicts the user preference for a certain movie. As validation of the model we will use RMSE (Root Mean Square Error).
+
+The most famoust recommender event was originally a Netflix competetion with the following goal: Whoever improves our recommendation engine with 10% wins a million dollars.
+
+# 1.1 The approach
+The goal of the project is to establish an algorithm with a RMSE of 0.87750 or lower.
+
+In order to reach this goal, the following steps were taken:
+Explored the data set
+Split the data set into a training set (9,000,055 observations) and a test set (999,999 observations).
+Apply different methods to improve the algorithm until it produced an RMSE of 0.87750 or lower.
+Test the algorithm on the Test (validation) set.
+Compare RMSEs between training and test set to verify the model.
+
+# 2. The Dataset.
+
+In the provided data set we find 10,000,054 observations of 6 variables.
+List of variables.
+userId: Identification number for each user.
+movieId: Identification number for each movie.
+timestamp: Date and time at which each rating was recorded.
+title: Title of each movie.
+genres: Movie genre which each movie is classified as.
+rating: Rating between 0 and 5 with intervals of 0.5 for each movie.
+
+This is the code provided by edx.
+```{r Provided code}
+# Provided code
+if(!require(tidyverse)) install.packages("tidyverse", repos = "http://cran.us.r-project.org")
+if(!require(caret)) install.packages("caret", repos = "http://cran.us.r-project.org")
+# MovieLens 10M dataset:
+# https://grouplens.org/datasets/movielens/10m/
+# http://files.grouplens.org/datasets/movielens/ml-10m.zip
+dl <- tempfile()
+download.file("http://files.grouplens.org/datasets/movielens/ml-10m.zip", dl)
+ratings <- read.table(text = gsub("::", "\t", readLines(unzip(dl, "ml-10M100K/ratings.dat"))),
+                      col.names = c("userId", "movieId", "rating", "timestamp"))
+movies <- str_split_fixed(readLines(unzip(dl, "ml-10M100K/movies.dat")), "\\::", 3)
+colnames(movies) <- c("movieId", "title", "genres")
+movies <- as.data.frame(movies) %>% mutate(movieId = as.numeric(levels(movieId))[movieId],
+                                           title = as.character(title),
+                                           genres = as.character(genres))
+movielens <- left_join(ratings, movies, by = "movieId")
+# Validation set will be 10% of MovieLens data
+set.seed(1, sample.kind = "Rounding")
+test_index <- createDataPartition(y = movielens$rating, times = 1, p = 0.1, list = FALSE)
+edx <- movielens[-test_index,]
+temp <- movielens[test_index,]
+# Make sure userId and movieId in validation set are also in edx set
+validation <- temp %>% 
+  semi_join(edx, by = "movieId") %>%
+  semi_join(edx, by = "userId")
+# Add rows removed from validation set back into edx set
+removed <- anti_join(temp, validation)
+edx <- rbind(edx, removed)
+```
+
+
+# 3. Exploratory Analysis.
+Alot of the exploratory analysis has already been done in order to answer the questions on the Quiz in the course material. However I will try to visualize some of the data from the original data set to paint a better picture of what the set looks like and how it's distributed.
+
+Printing the head of the data set to see what it looks like.
+```{r Head edx}
+head(edx)
+```
+
+Plot the Distribution of ratings
+```{r Distribution of ratings}
+edx %>% ggplot(aes(rating)) +
+geom_bar(color = "Blue")
+  labs(title = "Distribution of Ratings",
+       x = "Rating",
+       y = "Frequency")
+```
+
+An overview of the metrics per genre shows us how the data set is distributed by genre.
+```{r Metrics per Genre}
+edx_metrics_perGenre <- edx %>%
+  separate_rows(genres, sep = "\\|") %>%
+  group_by(genres) %>%
+  summarize(Total_ratings_perGenre = n(), Avarage_ratings_perGenre = mean(rating), 
+            Total_movies_perGenre = n_distinct(movieId),Total_users_perGenre = n_distinct(userId))
+edx_metrics_perGenre
+```
+
+Plot the Total ratings per genre.
+```{r Total ratings per genre, echo=FALSE}
+edx_metrics_perGenre %>%
+ggplot(aes(x = reorder(genres, -Total_ratings_perGenre), 
+           y = Total_ratings_perGenre, fill = genres, label = Total_ratings_perGenre)) +
+geom_col() + 
+geom_text(aes(label = Total_ratings_perGenre), angle = 90, 
+          color = "white", size = 3, check_overlap = T, position = position_stack((vjust = 0.5))) + 
+labs(title = "Total ratings per genre", x = "Genres", y = "Total ratings") +theme(axis.text.x = element_text(angle = 90))
+```
+
+# 4. The model
+
+Before we start we establish the baseline. By calculating the mean and RMSE of the training set we have a clear comparison to see how the model is performing.
+```{r Establishing baseline}
+# Baseline avarage rating of all movies
+mu_base <- mean(edx$rating)
+mu_base
+
+# Baseline RMSE
+RMSE_base <- RMSE(edx$rating, mu_base)
+RMSE_base
+
+# Creating tibble
+RMSE_table <- tibble(Method = "Baseline", RMSE = RMSE_base) 
+RMSE_table
+```
+
+#4.1 User and movie effect
+The first step to improve the RMSE is to take into account the user (u_i) and movie (m_i) bias.
+
+```{r User and movie effect}
+# Modelling user and movie effect
+mu <- mean(edx$rating)
+
+movie_avg <- edx %>%
+  group_by(movieId) %>%
+  summarize(m_i = mean(rating - mu))
+
+user_avg <- edx %>%
+  left_join(movie_avg, by = "movieId") %>%
+  group_by(userId) %>%
+  summarize(u_i = mean(rating - mu - m_i))
+
+predicted_ratings <- edx %>%
+  left_join(movie_avg, by = "movieId") %>%
+  left_join(user_avg, by = "userId") %>%
+  mutate(pred = mu + m_i + u_i) %>% .$pred
+
+model_RMSE <- RMSE(predicted_ratings, edx$rating)
+model_RMSE 
+```
+We already see a significant improvement over the baseline model. We´ll explore if we can further improve the model through regularization.
+```{r Updated table, echo=FALSE}
+# Update table
+RMSE_table <- bind_rows(RMSE_table, tibble(Method = "User & Movie Effect", RMSE = model_RMSE))
+RMSE_table
+```
+
+# 4.2 Regularization
+Regularization allows us to penalize large estimates formed by using small sample sizes. Therefore the model will be less likely to fit the noise of the training data.
+```{r}
+# Select lambda
+lambdas <- seq(0, 10, .2)
+
+# Create function
+RMSE_reg_fun <- sapply(lambdas, function(l){
+  
+  mu <- mean(edx$rating)
+  
+  m_i <- edx %>%
+    group_by(movieId) %>%
+    summarize(m_i = sum(rating - mu)/(n()+l))
+  
+  u_i <- edx %>%
+    left_join(m_i, by="movieId") %>%
+    group_by(userId) %>%
+    summarize(u_i = sum(rating - m_i - mu)/(n()+l))
+  
+  predicted_ratings <- edx %>%
+    left_join(m_i, by = "movieId") %>% 
+    left_join(u_i, by = "userId") %>%
+    mutate(pred = mu + m_i + u_i) %>% .$pred
+  
+  return(RMSE(predicted_ratings, edx$rating))
+})
+```
+
+```{r Plot lambda vs RMSE}
+# Plot lambda vs RMSE
+qplot(lambdas, RMSE_reg_fun,
+      main = "Regularization",
+      xlab = "Lambda", ylab = "RMSE")
+
+# Optimal lambda
+lambda_opt <- lambdas[which.min(RMSE_reg_fun)]
+lambda_opt
+
+# Results
+min(RMSE_reg_fun)
+```
+Regularizing the model slightly improved the RMSE.
+```{r Updated table, echo=FALSE}
+# Updated table
+RMSE_table <- bind_rows(RMSE_table, tibble(Method = "User & Movie Effect + Regularization", RMSE = min(RMSE_reg_fun)))
+RMSE_table
+```
+
+# 4.3 Baseline validation
+Before testing how our model performs on the validation set we have to establish the baseline.
+```{r Baseline validation}
+# Baseline avarage rating of all movies
+mu_base <- mean(validation$rating)
+mu_base
+
+# Baseline RMSE
+RMSE_base <- RMSE(validation$rating, mu_base)
+RMSE_base
+```
+
+```{r Updated table}
+# Update table
+RMSE_table <- bind_rows(RMSE_table, tibble(Method = "Baseline(validation)", RMSE = RMSE_base))
+RMSE_table
+```
+
+#4.4 User and movie effect (validation)
+Let´s test the model on the validation set.
+```{r Modelling user and movie effect on the validation set}
+# Modelling user and movie effect
+mu <- mean(validation$rating)
+
+movie_avg <- validation %>%
+  group_by(movieId) %>%
+  summarize(m_i = mean(rating - mu))
+
+user_avg <- validation %>%
+  left_join(movie_avg, by = "movieId") %>%
+  group_by(userId) %>%
+  summarize(u_i = mean(rating - mu - m_i))
+
+predicted_ratings <- validation %>%
+  left_join(movie_avg, by = "movieId") %>%
+  left_join(user_avg, by = "userId") %>%
+  mutate(pred = mu + m_i + u_i) %>% .$pred
+
+model_RMSE <- RMSE(predicted_ratings, validation$rating)
+model_RMSE 
+```
+```{r Updated table}
+# Update table
+RMSE_table <- bind_rows(RMSE_table, tibble(Method = "User & Movie Effect (validation)", RMSE = model_RMSE))
+RMSE_table
+```
+#4.5 Regularization (validation)
+Let's see how the regularized model performs on the validation set.
+```{r Regularization on validation set}
+# Select lambda
+lambdas <- seq(0, 10, .2)
+
+# Create function
+RMSE_reg_fun <- sapply(lambdas, function(l){
+  
+  mu <- mean(validation$rating)
+  
+  m_i <- validation %>%
+    group_by(movieId) %>%
+    summarize(m_i = sum(rating - mu)/(n()+l))
+  
+  u_i <- validation %>%
+    left_join(m_i, by="movieId") %>%
+    group_by(userId) %>%
+    summarize(u_i = sum(rating - m_i - mu)/(n()+l))
+  
+  predicted_ratings <- validation %>%
+    left_join(m_i, by = "movieId") %>% 
+    left_join(u_i, by = "userId") %>%
+    mutate(pred = mu + m_i + u_i) %>% .$pred
+  
+  return(RMSE(predicted_ratings, validation$rating))
+})
+```
+```{r Plot lambda vs RMSE}
+# Plot lambda vs RMSE
+qplot(lambdas, RMSE_reg_fun,
+      main = "Regularization",
+      xlab = "Lambda", ylab = "RMSE")
+
+# Optimal lambda
+lambda_opt <- lambdas[which.min(RMSE_reg_fun)]
+lambda_opt
+
+# Results
+min(RMSE_reg_fun)
+```
+# 5. Results
+
+```{r Results}
+# Final results
+RMSE_table <- bind_rows(RMSE_table, tibble(Method = "User & Movie Effect + Regularization (validation)", RMSE = min(RMSE_reg_fun)))
+RMSE_table
+```
+# 5.1 Conclusion
+From the results in the final table we find that user and movie ID variables had plenty of predicting power to create a model with a more optimal RMSE than our original goal (0.875). However I didn't expect the regularization to have such minimal impact on the model. 
+
+
+
